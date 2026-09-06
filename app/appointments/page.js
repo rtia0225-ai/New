@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
-import { confirmAppointment, cancelAppointment } from "../actions";
+import { confirmAppointment, cancelAppointment } from "./actions";
 
 const STATUS_LABELS = {
   proposed: "En attente de confirmation",
