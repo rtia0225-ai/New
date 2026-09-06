@@ -2,83 +2,82 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
-import { notifyNewAppointment } from "@/lib/notifications";
+import { ensureProfile } from "@/lib/ensureProfile";
 
-export async function requestAppointment(formData) {
+export async function signup(formData) {
   const supabase = createClient();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/auth/login");
+  const email = formData.get("email");
+  const password = formData.get("password");
+  const fullName = formData.get("fullName");
+  const role = formData.get("role"); // 'client' ou 'artisan'
+  const trade = formData.get("trade"); // uniquement si artisan
 
-  const artisanId = formData.get("artisanId");
-  const projectId = formData.get("projectId") || null;
-  const scheduledAt = formData.get("scheduledAt"); // datetime-local
-  const notes = formData.get("notes");
-
-  const { data: appointment, error } = await supabase
-    .from("appointments")
-    .insert({
-      client_id: user.id,
-      artisan_id: artisanId,
-      project_id: projectId,
-      scheduled_at: new Date(scheduledAt).toISOString(),
-      notes,
-      status: "proposed",
-    })
-    .select("id")
-    .single();
+  // On stocke nom/rôle/métier dans les métadonnées du compte : elles
+  // survivent même si la confirmation d'email retarde la création du
+  // profil en base de données.
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: {
+        full_name: fullName,
+        role,
+        trade,
+      },
+    },
+  });
 
   if (error) {
-    return redirect(
-      `/appointments/new?artisan=${artisanId}&error=${encodeURIComponent(error.message)}`
-    );
+    return redirect(`/auth/signup?error=${encodeURIComponent(error.message)}`);
   }
 
-  // Notifie l'artisan (SMS + rappel) — voir lib/notifications.js
-  await notifyNewAppointment(appointment.id);
+  const userId = data.user?.id;
+  if (userId) {
+    // Tentative immédiate (fonctionne si aucune confirmation d'email
+    // n'est requise). Si ça échoue silencieusement, ensureProfile()
+    // rattrapera ça à la connexion.
+    await supabase.from("profiles").insert({
+      id: userId,
+      full_name: fullName,
+      role,
+    });
 
-  redirect("/appointments");
+    if (role === "artisan") {
+      await supabase.from("artisan_profiles").insert({
+        id: userId,
+        trade: trade || "Non spécifié",
+      });
+    }
+  }
+
+  redirect("/auth/confirm-email");
 }
 
-// L'artisan confirme le RDV et peut y joindre un lien de réunion (Meet, Zoom...)
-export async function confirmAppointment(formData) {
+export async function login(formData) {
   const supabase = createClient();
-  const appointmentId = formData.get("appointmentId");
-  const meetingLink = formData.get("meetingLink");
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/auth/login");
+  const email = formData.get("email");
+  const password = formData.get("password");
 
-  await supabase
-    .from("appointments")
-    .update({
-      status: "confirmed",
-      meeting_link: meetingLink || null,
-    })
-    .eq("id", appointmentId)
-    .eq("artisan_id", user.id);
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  });
 
-  redirect("/appointments");
+  if (error) {
+    return redirect(`/auth/login?error=${encodeURIComponent(error.message)}`);
+  }
+
+  // Rattrapage : si le profil n'existe pas encore (cas de la confirmation
+  // d'email qui a retardé sa création), on le crée maintenant.
+  await ensureProfile(supabase, data.user);
+
+  redirect("/dashboard");
 }
 
-export async function cancelAppointment(formData) {
+export async function logout() {
   const supabase = createClient();
-  const appointmentId = formData.get("appointmentId");
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/auth/login");
-
-  await supabase
-    .from("appointments")
-    .update({ status: "cancelled" })
-    .eq("id", appointmentId)
-    .or(`client_id.eq.${user.id},artisan_id.eq.${user.id}`);
-
-  redirect("/appointments");
+  await supabase.auth.signOut();
+  redirect("/");
 }
